@@ -1,0 +1,983 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Station Solaire Intelligente — Deval Stores</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js"></script>
+<style>
+  /* ============================================================
+     VARIABLES & RESET
+  ============================================================ */
+  :root {
+    --bg:        #040810;
+    --surface:   #080f1e;
+    --panel:     #0d1829;
+    --border:    #0f2a45;
+    --glow:      #00c8ff;
+    --glow2:     #00ffa3;
+    --warn:      #ffb300;
+    --danger:    #ff3d5a;
+    --text:      #cde4f7;
+    --muted:     #3a5a7a;
+    --font-hd:   'Orbitron', monospace;
+    --font-data: 'Share Tech Mono', monospace;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-data);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ---- Background animated grid ---- */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,200,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,200,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ---- Scanline overlay ---- */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.08) 2px,
+      rgba(0,0,0,0.08) 4px
+    );
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  /* ============================================================
+     LAYOUT
+  ============================================================ */
+  .container {
+    position: relative;
+    z-index: 2;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 20px 16px 40px;
+  }
+
+  /* ============================================================
+     HEADER
+  ============================================================ */
+  header {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 30px 0 24px;
+    text-align: center;
+    position: relative;
+  }
+
+  .logo-sun {
+    width: 56px;
+    height: 56px;
+    margin-bottom: 4px;
+    filter: drop-shadow(0 0 16px var(--glow));
+    animation: spin 20s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  header h1 {
+    font-family: var(--font-hd);
+    font-size: clamp(1.1rem, 4vw, 1.7rem);
+    font-weight: 900;
+    letter-spacing: 0.12em;
+    color: var(--glow);
+    text-shadow: 0 0 24px rgba(0,200,255,0.6);
+    text-transform: uppercase;
+  }
+
+  header p {
+    font-size: 0.78rem;
+    color: var(--muted);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+  }
+
+  /* ============================================================
+     STATUS BAR
+  ============================================================ */
+  .status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 20px;
+    margin-bottom: 24px;
+  }
+
+  .status-dot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+    letter-spacing: 0.08em;
+  }
+
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition: background 0.4s;
+    flex-shrink: 0;
+  }
+
+  .dot.online  { background: var(--glow2); box-shadow: 0 0 8px var(--glow2); animation: pulse 2s infinite; }
+  .dot.offline { background: var(--danger); }
+  .dot.connecting { background: var(--warn); animation: blink 1s infinite; }
+
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+
+  #last-update {
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+
+  /* ============================================================
+     MQTT CONFIG PANEL
+  ============================================================ */
+  .config-panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 24px;
+  }
+
+  .config-panel h3 {
+    font-family: var(--font-hd);
+    font-size: 0.75rem;
+    letter-spacing: 0.2em;
+    color: var(--glow);
+    margin-bottom: 16px;
+    text-transform: uppercase;
+  }
+
+  .config-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .field label {
+    display: block;
+    font-size: 0.7rem;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+  }
+
+  .field input {
+    width: 100%;
+    background: rgba(0,200,255,0.04);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    color: var(--text);
+    font-family: var(--font-data);
+    font-size: 0.85rem;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .field input:focus { border-color: var(--glow); }
+
+  .btn-connect {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: transparent;
+    border: 1px solid var(--glow);
+    border-radius: 8px;
+    padding: 10px 24px;
+    color: var(--glow);
+    font-family: var(--font-hd);
+    font-size: 0.75rem;
+    letter-spacing: 0.15em;
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: all 0.25s;
+  }
+
+  .btn-connect:hover {
+    background: rgba(0,200,255,0.1);
+    box-shadow: 0 0 20px rgba(0,200,255,0.25);
+  }
+
+  /* ============================================================
+     CARDS GRILLE
+  ============================================================ */
+  .cards-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.3s, box-shadow 0.3s;
+  }
+
+  .card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    border-radius: 14px 14px 0 0;
+    transition: opacity 0.3s;
+  }
+
+  .card.blue::before  { background: linear-gradient(90deg, transparent, var(--glow), transparent); }
+  .card.green::before { background: linear-gradient(90deg, transparent, var(--glow2), transparent); }
+  .card.warn::before  { background: linear-gradient(90deg, transparent, var(--warn), transparent); }
+  .card.danger::before{ background: linear-gradient(90deg, transparent, var(--danger), transparent); }
+
+  .card:hover { border-color: rgba(0,200,255,0.3); }
+
+  .card-label {
+    font-size: 0.7rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .card-label svg { flex-shrink: 0; }
+
+  .card-value {
+    font-family: var(--font-hd);
+    font-size: 2.2rem;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: 4px;
+    transition: color 0.3s;
+  }
+
+  .card.blue  .card-value { color: var(--glow); text-shadow: 0 0 20px rgba(0,200,255,0.4); }
+  .card.green .card-value { color: var(--glow2); text-shadow: 0 0 20px rgba(0,255,163,0.4); }
+  .card.warn  .card-value { color: var(--warn); text-shadow: 0 0 20px rgba(255,179,0,0.4); }
+  .card.danger .card-value { color: var(--danger); }
+
+  .card-unit {
+    font-size: 0.85rem;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+  }
+
+  /* Progress bar */
+  .progress {
+    height: 3px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 2px;
+    margin-top: 14px;
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .blue  .progress-fill { background: var(--glow); box-shadow: 0 0 6px var(--glow); }
+  .green .progress-fill { background: var(--glow2); box-shadow: 0 0 6px var(--glow2); }
+  .warn  .progress-fill { background: var(--warn); }
+
+  /* ============================================================
+     SECTION RELAIS
+  ============================================================ */
+  .section-title {
+    font-family: var(--font-hd);
+    font-size: 0.72rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 14px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .relais-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .relay-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    transition: border-color 0.3s;
+  }
+
+  .relay-card.active { border-color: rgba(0,255,163,0.4); }
+
+  .relay-info {}
+
+  .relay-name {
+    font-family: var(--font-hd);
+    font-size: 0.85rem;
+    letter-spacing: 0.1em;
+    margin-bottom: 4px;
+  }
+
+  .relay-desc {
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+
+  .relay-status {
+    font-size: 0.7rem;
+    letter-spacing: 0.15em;
+    margin-top: 6px;
+    font-family: var(--font-hd);
+  }
+
+  .relay-status.on  { color: var(--glow2); }
+  .relay-status.off { color: var(--danger); }
+
+  /* Toggle switch */
+  .toggle {
+    position: relative;
+    width: 56px;
+    height: 28px;
+    flex-shrink: 0;
+  }
+
+  .toggle input { opacity: 0; width: 0; height: 0; }
+
+  .toggle-slider {
+    position: absolute;
+    inset: 0;
+    background: rgba(255,61,90,0.3);
+    border: 1px solid var(--danger);
+    border-radius: 28px;
+    cursor: pointer;
+    transition: all 0.35s;
+  }
+
+  .toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 20px;
+    height: 20px;
+    left: 3px;
+    top: 3px;
+    background: var(--danger);
+    border-radius: 50%;
+    transition: all 0.35s;
+    box-shadow: 0 0 8px var(--danger);
+  }
+
+  .toggle input:checked + .toggle-slider {
+    background: rgba(0,255,163,0.15);
+    border-color: var(--glow2);
+  }
+
+  .toggle input:checked + .toggle-slider::before {
+    transform: translateX(28px);
+    background: var(--glow2);
+    box-shadow: 0 0 12px var(--glow2);
+  }
+
+  /* ============================================================
+     GRAPHIQUE HISTORIQUE
+  ============================================================ */
+  .chart-section {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px 24px;
+    margin-bottom: 24px;
+  }
+
+  .chart-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+
+  .tab {
+    padding: 6px 16px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    font-family: var(--font-data);
+    font-size: 0.78rem;
+    letter-spacing: 0.1em;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .tab.active {
+    border-color: var(--glow);
+    color: var(--glow);
+    background: rgba(0,200,255,0.08);
+  }
+
+  canvas#chart {
+    width: 100% !important;
+    height: 180px !important;
+  }
+
+  /* ============================================================
+     FOOTER
+  ============================================================ */
+  footer {
+    text-align: center;
+    font-size: 0.7rem;
+    color: var(--muted);
+    letter-spacing: 0.12em;
+    padding-top: 8px;
+  }
+
+  footer span { color: var(--glow); }
+
+  /* ============================================================
+     ANIMATIONS VALEUR UPDATE
+  ============================================================ */
+  @keyframes flash {
+    0%   { opacity: 1; }
+    30%  { opacity: 0.3; }
+    100% { opacity: 1; }
+  }
+
+  .updated { animation: flash 0.5s ease; }
+
+  /* ============================================================
+     RESPONSIVE
+  ============================================================ */
+  @media (max-width: 600px) {
+    .card-value { font-size: 1.7rem; }
+    header h1   { font-size: 1rem; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- HEADER -->
+  <header>
+    <!-- Soleil SVG animé -->
+    <svg class="logo-sun" viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="28" cy="28" r="10" fill="none" stroke="#00c8ff" stroke-width="2"/>
+      <circle cx="28" cy="28" r="14" fill="none" stroke="#00c8ff" stroke-width="0.5" stroke-dasharray="3 4"/>
+      <line x1="28" y1="4"  x2="28" y2="10" stroke="#00c8ff" stroke-width="2" stroke-linecap="round"/>
+      <line x1="28" y1="46" x2="28" y2="52" stroke="#00c8ff" stroke-width="2" stroke-linecap="round"/>
+      <line x1="4"  y1="28" x2="10" y2="28" stroke="#00c8ff" stroke-width="2" stroke-linecap="round"/>
+      <line x1="46" y1="28" x2="52" y2="28" stroke="#00c8ff" stroke-width="2" stroke-linecap="round"/>
+      <line x1="11.3" y1="11.3" x2="15.5" y2="15.5" stroke="#00c8ff" stroke-width="2" stroke-linecap="round"/>
+      <line x1="40.5" y1="40.5" x2="44.7" y2="44.7" stroke="#00c8ff" stroke-width="2" stroke-linecap="round"/>
+      <line x1="44.7" y1="11.3" x2="40.5" y2="15.5" stroke="#00c8ff" stroke-width="2" stroke-linecap="round"/>
+      <line x1="15.5" y1="40.5" x2="11.3" y2="44.7" stroke="#00c8ff" stroke-width="2" stroke-linecap="round"/>
+    </svg>
+    <h1>Station Solaire Intelligente</h1>
+    <p>Monitoring &amp; Contrôle à Distance — Deval Stores</p>
+  </header>
+
+  <!-- STATUS BAR -->
+  <div class="status-bar">
+    <div class="status-dot">
+      <div class="dot connecting" id="conn-dot"></div>
+      <span id="conn-label">Déconnecté</span>
+    </div>
+    <div id="last-update">Dernière donnée: --</div>
+    <div style="font-size:0.72rem; color:var(--muted); letter-spacing:0.1em">
+      ESP32 · MQTT · HiveMQ Cloud
+    </div>
+  </div>
+
+  <!-- CONFIG MQTT -->
+  <div class="config-panel" id="config-section">
+    <h3>⚙ Configuration Broker MQTT</h3>
+    <div class="config-grid">
+      <div class="field">
+        <label>Serveur HiveMQ</label>
+        <input type="text" id="cfg-host" placeholder="8f2aabd7f80b4092b6cc2e539047dc16.s1.eu.hivemq.cloud" value="">
+      </div>
+      <div class="field">
+        <label>Port WebSocket (TLS)</label>
+        <input type="number" id="cfg-port" value="8884">
+      </div>
+      <div class="field">
+        <label>Identifiant</label>
+        <input type="text" id="cfg-user" placeholder="ESPSolar32-">
+      </div>
+      <div class="field">
+        <label>Mot de passe</label>
+        <input type="password" id="cfg-pass" placeholder="Solar123#">
+      </div>
+    </div>
+    <button class="btn-connect" id="btn-connect" onclick="toggleConnection()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/>
+      </svg>
+      Se connecter
+    </button>
+  </div>
+
+  <!-- CARTES MESURES -->
+  <div class="section-title">Paramètres en temps réel</div>
+  <div class="cards-grid">
+
+    <div class="card blue" id="card-ubat">
+      <div class="card-label">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="2" y="7" width="18" height="11" rx="2"/><path d="M22 11v3"/>
+        </svg>
+        Tension batterie
+      </div>
+      <div class="card-value" id="val-ubat">--.-</div>
+      <div class="card-unit">Volts (V)</div>
+      <div class="progress"><div class="progress-fill" id="bar-ubat" style="width:0%"></div></div>
+    </div>
+
+    <div class="card green" id="card-ibat">
+      <div class="card-label">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+        </svg>
+        Courant batterie
+      </div>
+      <div class="card-value" id="val-ibat">--.-</div>
+      <div class="card-unit">Ampères (A)</div>
+      <div class="progress"><div class="progress-fill" id="bar-ibat" style="width:0%"></div></div>
+    </div>
+
+    <div class="card warn" id="card-pbat">
+      <div class="card-label">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/>
+          <line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+        </svg>
+        Puissance
+      </div>
+      <div class="card-value" id="val-pbat">---</div>
+      <div class="card-unit">Watts (W)</div>
+      <div class="progress"><div class="progress-fill" id="bar-pbat" style="width:0%"></div></div>
+    </div>
+
+    <div class="card blue" id="card-tbat">
+      <div class="card-label">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/>
+        </svg>
+        Temp. Batterie
+      </div>
+      <div class="card-value" id="val-tbat">--.-</div>
+      <div class="card-unit">Celsius (°C)</div>
+    </div>
+
+    <div class="card warn" id="card-tpv">
+      <div class="card-label">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/>
+        </svg>
+        Temp. Panneau PV
+      </div>
+      <div class="card-value" id="val-tpv">--.-</div>
+      <div class="card-unit">Celsius (°C)</div>
+    </div>
+
+  </div>
+
+  <!-- RELAIS -->
+  <div class="section-title">Commandes Relais</div>
+  <div class="relais-grid">
+
+    <div class="relay-card" id="relay-card-1">
+      <div class="relay-info">
+        <div class="relay-name">RELAIS 1</div>
+        <div class="relay-desc">Charge DC 5V — Contrôleur</div>
+        <div class="relay-status off" id="rl1-label">● INACTIF</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="toggle-rl1" onchange="toggleRelay(1, this.checked)">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+
+    <div class="relay-card" id="relay-card-2">
+      <div class="relay-info">
+        <div class="relay-name">RELAIS 2</div>
+        <div class="relay-desc">Charge AC 220V — Réseau</div>
+        <div class="relay-status off" id="rl2-label">● INACTIF</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="toggle-rl2" onchange="toggleRelay(2, this.checked)">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+
+  </div>
+
+  <!-- GRAPHIQUE -->
+  <div class="chart-section">
+    <div class="section-title">Historique (50 dernières mesures)</div>
+    <div class="chart-tabs">
+      <button class="tab active" onclick="setChart('ubat', this)">Tension</button>
+      <button class="tab" onclick="setChart('ibat', this)">Courant</button>
+      <button class="tab" onclick="setChart('pbat', this)">Puissance</button>
+      <button class="tab" onclick="setChart('tbat', this)">Temp. Bat.</button>
+      <button class="tab" onclick="setChart('tpv', this)">Temp. PV</button>
+    </div>
+    <canvas id="chart"></canvas>
+  </div>
+
+  <footer>
+    Développé pour la thèse — Station de Recharge Solaire Intelligente &nbsp;|&nbsp;
+    <span>Deval Stores</span> &nbsp;|&nbsp; Cotonou, Bénin
+  </footer>
+
+</div>
+
+<!-- ============================================================
+     JAVASCRIPT
+============================================================ -->
+<script>
+// ============================================================
+// DONNÉES & HISTORIQUE
+// ============================================================
+const MAX_HIST = 50;
+const history = { ubat:[], ibat:[], pbat:[], tbat:[], tpv:[] };
+let currentChart = 'ubat';
+let mqttClient = null;
+let connected = false;
+
+// ============================================================
+// CONNEXION MQTT (WebSocket TLS — port 8884 HiveMQ)
+// ============================================================
+function toggleConnection() {
+  if (connected) {
+    disconnect();
+  } else {
+    connect();
+  }
+}
+
+function connect() {
+  const host = document.getElementById('cfg-host').value.trim();
+  const port = parseInt(document.getElementById('cfg-port').value);
+  const user = document.getElementById('cfg-user').value.trim();
+  const pass = document.getElementById('cfg-pass').value.trim();
+
+  if (!host || !user || !pass) {
+    alert('Remplis tous les champs MQTT (serveur, identifiant, mot de passe)');
+    return;
+  }
+
+  const clientId = 'dashboard_' + Math.random().toString(36).substr(2, 8);
+  setStatus('connecting');
+
+  // Paho MQTT via WebSocket TLS
+  mqttClient = new Paho.Client(host, port, '/mqtt', clientId);
+
+  mqttClient.onConnectionLost = function(resp) {
+    console.warn('[MQTT] Connexion perdue:', resp.errorMessage);
+    connected = false;
+    setStatus('offline');
+  };
+
+  mqttClient.onMessageArrived = function(msg) {
+    onMessage(msg.destinationName, msg.payloadString);
+  };
+
+  mqttClient.connect({
+    useSSL: true,
+    userName: user,
+    password: pass,
+    onSuccess: function() {
+      connected = true;
+      setStatus('online');
+      mqttClient.subscribe('solaire/mesures');
+      mqttClient.subscribe('solaire/status');
+      document.getElementById('btn-connect').textContent = 'Déconnecter';
+      console.log('[MQTT] Connecté à', host);
+    },
+    onFailure: function(err) {
+      console.error('[MQTT] Échec connexion:', err.errorMessage);
+      setStatus('offline');
+      alert('Connexion MQTT échouée : ' + err.errorMessage + '\nVérifie tes identifiants HiveMQ.');
+    }
+  });
+}
+
+function disconnect() {
+  if (mqttClient && connected) {
+    mqttClient.disconnect();
+  }
+  connected = false;
+  setStatus('offline');
+  document.getElementById('btn-connect').innerHTML = `
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/>
+    </svg>
+    Se connecter`;
+}
+
+// ============================================================
+// RECEPTION MESSAGE ESP32
+// ============================================================
+function onMessage(topic, payload) {
+  if (topic === 'solaire/mesures') {
+    try {
+      const d = JSON.parse(payload);
+      updateCards(d);
+      pushHistory(d);
+      drawChart();
+      document.getElementById('last-update').textContent =
+        'Dernière donnée: ' + new Date().toLocaleTimeString('fr-FR');
+    } catch(e) {
+      console.error('[Parse] Erreur JSON:', e, payload);
+    }
+  }
+}
+
+// ============================================================
+// MISE À JOUR CARTES
+// ============================================================
+function updateCards(d) {
+  setVal('val-ubat', d.ubat, 'bar-ubat', d.ubat / 15 * 100);
+  setVal('val-ibat', d.ibat, 'bar-ibat', Math.abs(d.ibat) / 10 * 100);
+  setVal('val-pbat', d.pbat, 'bar-pbat', d.pbat / 150 * 100);
+  setVal('val-tbat', d.tbat);
+  setVal('val-tpv',  d.tpv);
+
+  // Relais
+  updateRelay(1, d.rl1);
+  updateRelay(2, d.rl2);
+}
+
+function setVal(id, val, barId, barPct) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const v = (typeof val === 'number') ? val.toFixed(val < 10 ? 2 : 1) : '--';
+  if (el.textContent !== v) {
+    el.textContent = v;
+    el.classList.remove('updated');
+    void el.offsetWidth;
+    el.classList.add('updated');
+  }
+  if (barId) {
+    const bar = document.getElementById(barId);
+    if (bar) bar.style.width = Math.min(100, Math.max(0, barPct || 0)) + '%';
+  }
+}
+
+function updateRelay(num, state) {
+  const toggle = document.getElementById('toggle-rl' + num);
+  const label  = document.getElementById('rl' + num + '-label');
+  const card   = document.getElementById('relay-card-' + num);
+  if (!toggle) return;
+  toggle.checked = !!state;
+  if (state) {
+    label.textContent = '● ACTIF';
+    label.className = 'relay-status on';
+    card.classList.add('active');
+  } else {
+    label.textContent = '● INACTIF';
+    label.className = 'relay-status off';
+    card.classList.remove('active');
+  }
+}
+
+// ============================================================
+// COMMANDE RELAIS VERS ESP32
+// ============================================================
+function toggleRelay(num, state) {
+  if (!connected) {
+    alert('Non connecté au broker MQTT.\nConnecte-toi d\'abord.');
+    document.getElementById('toggle-rl' + num).checked = !state;
+    return;
+  }
+  const cmd = 'rl' + num + (state ? '_on' : '_off');
+  const msg = new Paho.Message(cmd);
+  msg.destinationName = 'solaire/commandes';
+  mqttClient.send(msg);
+  console.log('[Relais] Commande envoyée:', cmd);
+}
+
+// ============================================================
+// HISTORIQUE & GRAPHIQUE (Canvas natif)
+// ============================================================
+function pushHistory(d) {
+  ['ubat','ibat','pbat','tbat','tpv'].forEach(k => {
+    history[k].push(typeof d[k] === 'number' ? d[k] : null);
+    if (history[k].length > MAX_HIST) history[k].shift();
+  });
+}
+
+const CHART_COLORS = {
+  ubat: '#00c8ff', ibat: '#00ffa3', pbat: '#ffb300', tbat: '#00c8ff', tpv: '#ffb300'
+};
+
+function setChart(key, btn) {
+  currentChart = key;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  drawChart();
+}
+
+function drawChart() {
+  const canvas = document.getElementById('chart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+
+  // Resize canvas to actual CSS size
+  const rect = canvas.getBoundingClientRect();
+  canvas.width  = rect.width  * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+
+  const W = rect.width;
+  const H = rect.height;
+  const data = history[currentChart].filter(v => v !== null);
+  const color = CHART_COLORS[currentChart] || '#00c8ff';
+
+  ctx.clearRect(0, 0, W, H);
+
+  if (data.length < 2) {
+    ctx.fillStyle = 'rgba(255,255,255,0.1)';
+    ctx.font = '13px Share Tech Mono';
+    ctx.textAlign = 'center';
+    ctx.fillText('En attente de données...', W/2, H/2);
+    return;
+  }
+
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || 1;
+  const pad = { top: 16, bottom: 24, left: 40, right: 16 };
+  const iW = W - pad.left - pad.right;
+  const iH = H - pad.top - pad.bottom;
+
+  const xOf = i => pad.left + (i / (data.length - 1)) * iW;
+  const yOf = v => pad.top + (1 - (v - min) / range) * iH;
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.top + (i / 4) * iH;
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+    const val = max - (i / 4) * range;
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.font = '10px Share Tech Mono';
+    ctx.textAlign = 'right';
+    ctx.fillText(val.toFixed(1), pad.left - 4, y + 4);
+  }
+
+  // Gradient fill
+  const grad = ctx.createLinearGradient(0, pad.top, 0, H - pad.bottom);
+  grad.addColorStop(0, color + '33');
+  grad.addColorStop(1, 'transparent');
+
+  ctx.beginPath();
+  ctx.moveTo(xOf(0), yOf(data[0]));
+  for (let i = 1; i < data.length; i++) {
+    const x0 = xOf(i-1), y0 = yOf(data[i-1]);
+    const x1 = xOf(i),   y1 = yOf(data[i]);
+    const cx = (x0 + x1) / 2;
+    ctx.bezierCurveTo(cx, y0, cx, y1, x1, y1);
+  }
+  ctx.lineTo(xOf(data.length - 1), H - pad.bottom);
+  ctx.lineTo(xOf(0), H - pad.bottom);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Line
+  ctx.beginPath();
+  ctx.moveTo(xOf(0), yOf(data[0]));
+  for (let i = 1; i < data.length; i++) {
+    const x0 = xOf(i-1), y0 = yOf(data[i-1]);
+    const x1 = xOf(i),   y1 = yOf(data[i]);
+    const cx = (x0 + x1) / 2;
+    ctx.bezierCurveTo(cx, y0, cx, y1, x1, y1);
+  }
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 8;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Last dot
+  const last = data[data.length - 1];
+  ctx.beginPath();
+  ctx.arc(xOf(data.length - 1), yOf(last), 4, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 12;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+}
+
+// ============================================================
+// STATUS UI
+// ============================================================
+function setStatus(state) {
+  const dot   = document.getElementById('conn-dot');
+  const label = document.getElementById('conn-label');
+  dot.className = 'dot ' + state;
+  if (state === 'online')     label.textContent = 'Connecté — En ligne';
+  if (state === 'offline')    label.textContent = 'Déconnecté';
+  if (state === 'connecting') label.textContent = 'Connexion en cours...';
+}
+
+// ============================================================
+// RESIZE CHART
+// ============================================================
+window.addEventListener('resize', drawChart);
+drawChart();
+</script>
+</body>
+</html>
